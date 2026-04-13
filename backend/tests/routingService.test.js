@@ -2,10 +2,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/repositories/transitRepository.js", () => ({
   findNearbyStops: vi.fn(),
-  getTransitGraph: vi.fn()
+  getTransitGraph: vi.fn(),
+  getTransitGraphWithinBounds: vi.fn(),
+  getRouteShapePointsMap: vi.fn()
 }));
 
-import { findNearbyStops, getTransitGraph } from "../src/repositories/transitRepository.js";
+import {
+  findNearbyStops,
+  getRouteShapePointsMap,
+  getTransitGraph,
+  getTransitGraphWithinBounds
+} from "../src/repositories/transitRepository.js";
 import { searchCommuteRoutes } from "../src/services/routingService.js";
 
 describe("routingService searchCommuteRoutes", () => {
@@ -46,7 +53,9 @@ describe("routingService searchCommuteRoutes", () => {
       [3, []]
     ]);
 
+    getTransitGraphWithinBounds.mockResolvedValue({ adjacency, stopsById });
     getTransitGraph.mockResolvedValue({ adjacency, stopsById });
+    getRouteShapePointsMap.mockResolvedValue(new Map());
 
     const result = await searchCommuteRoutes({
       originText: "UP Diliman",

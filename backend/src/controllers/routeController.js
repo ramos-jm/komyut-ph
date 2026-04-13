@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { getRouteById, findNearbyStops } from "../repositories/transitRepository.js";
+import { getRouteById, findNearbyStops, searchStopsByName } from "../repositories/transitRepository.js";
 import { geocodePlace } from "../services/geocodingService.js";
 import { searchCommuteRoutes } from "../services/routingService.js";
 
@@ -20,6 +20,10 @@ const saveSchema = z.object({
   origin_text: z.string().min(3),
   destination_text: z.string().min(3),
   route_data: z.any()
+});
+
+const searchStopsSchema = z.object({
+  q: z.string().min(1).max(100)
 });
 
 export async function searchRoute(req, res, next) {
@@ -56,6 +60,16 @@ export async function getNearbyStops(req, res, next) {
       lng,
       radiusMeters: radius || 1000
     });
+    res.json({ stops });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function searchStops(req, res, next) {
+  try {
+    const { q } = searchStopsSchema.parse(req.query);
+    const stops = await searchStopsByName(q, 15);
     res.json({ stops });
   } catch (error) {
     next(error);

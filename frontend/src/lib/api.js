@@ -67,3 +67,30 @@ export async function getSavedRoutes() {
   }
   return response.json();
 }
+
+export async function getNearbyStops(lat, lng, radius = 1000) {
+  const url = new URL(`${API_BASE_URL}/stops/nearby`);
+  url.searchParams.set("lat", String(lat));
+  url.searchParams.set("lng", String(lng));
+  url.searchParams.set("radius", String(radius));
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    const message = await parseErrorMessage(response, "Failed to load nearby stops");
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+export async function searchStops(query) {
+  const url = new URL(`${API_BASE_URL}/stops/search`);
+  url.searchParams.set("q", query);
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    throw new Error("Failed to search stops");
+  }
+
+  return response.json();
+}

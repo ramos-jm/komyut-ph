@@ -3,38 +3,24 @@ import { env } from "../config/env.js";
 
 const { Pool } = pg;
 
-function resolveSslConfig(databaseUrl, nodeEnv) {
-  const databaseSsl = process.env.DATABASE_SSL;
-
-  if (databaseSsl === "false") {
-    return false;
-  }
-
-  if (databaseSsl === "true") {
+function resolveSslConfig() {
+  if (env.databaseSsl === "true") {
     return { rejectUnauthorized: false };
   }
 
-  try {
-    const parsed = new URL(databaseUrl);
-    const sslMode = parsed.searchParams.get("sslmode");
-
-    if (sslMode && sslMode !== "disable") {
-      return { rejectUnauthorized: false };
-    }
-
-    if (parsed.hostname.endsWith(".neon.tech")) {
-      return { rejectUnauthorized: false };
-    }
-  } catch {
-    // Use environment defaults below when URL parsing fails.
+  if (env.databaseSsl === "false") {
+    return false;
   }
 
-  return nodeEnv === "production" ? { rejectUnauthorized: false } : false;
+  const parsed = new URL(env.databaseUrl);
+  const host = parsed.hostname.toLowerCase();
+  const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1";
+  return isLocalHost ? false : { rejectUnauthorized: false };
 }
 
 export const pool = new Pool({
   connectionString: env.databaseUrl,
-  ssl: resolveSslConfig(env.databaseUrl, env.nodeEnv)
+  ssl: resolveSslConfig()
 });
 
 export async function withTransaction(callback) {

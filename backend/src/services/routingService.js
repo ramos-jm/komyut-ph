@@ -1,7 +1,9 @@
 import { env } from "../config/env.js";
 import {
   findNearbyStops,
-  getTransitGraph
+  getRouteShapePointsMap,
+  getTransitGraph,
+  getTransitGraphWithinBounds
 } from "../repositories/transitRepository.js";
 import { estimateWalkMinutes } from "../utils/geo.js";
 
@@ -15,6 +17,94 @@ const MODE_BASE_FARE = {
   train: 20
 };
 
+function kmToDegreeDelta(km) {
+  return km / 111;
+}
+
+function buildSearchBounds(originCoords, destinationCoords, bufferKm) {
+  const latBuffer = kmToDegreeDelta(bufferKm);
+  const minLat = Math.min(originCoords.latitude, destinationCoords.latitude) - latBuffer;
+  const maxLat = Math.max(originCoords.latitude, destinationCoords.latitude) + latBuffer;
+
+  const midLat = (originCoords.latitude + destinationCoords.latitude) / 2;
+  const safeCos = Math.max(0.2, Math.abs(Math.cos((midLat * Math.PI) / 180)));
+  const lngBuffer = latBuffer / safeCos;
+  const minLng = Math.min(originCoords.longitude, destinationCoords.longitude) - lngBuffer;
+  const maxLng = Math.max(originCoords.longitude, destinationCoords.longitude) + lngBuffer;
+
+  return { minLat, maxLat, minLng, maxLng };
+}
+
+function coordDistanceSquared(a, b) {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return dx * dx + dy * dy;
+}
+
+function nearestIndex(shapeCoords, target) {
+  let minIndex = 0;
+  let minDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < shapeCoords.length; i += 1) {
+    const dist = coordDistanceSquared(shapeCoords[i], target);
+    if (dist < minDistance) {
+      minDistance = dist;
+      minIndex = i;
+    }
+  }
+
+  return minIndex;
+}
+
+function buildFallbackSegmentCoordinates(rideStep, candidate, stopsById) {
+  const slice = candidate.pathEdges.slice(rideStep.edgeStartIndex, rideStep.edgeEndIndex + 1);
+  if (slice.length === 0) {
+    return [];
+  }
+
+  const firstStop = stopsById.get(slice[0].fromStopId);
+  if (!firstStop) {
+    return [];
+  }
+
+  const coordinates = [[Number(firstStop.longitude), Number(firstStop.latitude)]];
+  for (const edge of slice) {
+    const stop = stopsById.get(edge.toStopId);
+    if (stop) {
+      coordinates.push([Number(stop.longitude), Number(stop.latitude)]);
+    }
+  }
+  return coordinates;
+}
+
+function buildSegmentCoordinates(rideStep, candidate, stopsById, routeShapePointsMap) {
+  const fromStop = stopsById.get(rideStep.fromStopId);
+  const toStop = stopsById.get(rideStep.toStopId);
+  const shapeCoords = routeShapePointsMap.get(Number(rideStep.routeId));
+
+  if (!fromStop || !toStop || !shapeCoords || shapeCoords.length < 2) {
+    return buildFallbackSegmentCoordinates(rideStep, candidate, stopsById);
+  }
+
+  const fromCoord = [Number(fromStop.longitude), Number(fromStop.latitude)];
+  const toCoord = [Number(toStop.longitude), Number(toStop.latitude)];
+
+  const fromIdx = nearestIndex(shapeCoords, fromCoord);
+  const toIdx = nearestIndex(shapeCoords, toCoord);
+
+  if (fromIdx === toIdx) {
+    return buildFallbackSegmentCoordinates(rideStep, candidate, stopsById);
+  }
+
+  const sliced = fromIdx < toIdx
+    ? shapeCoords.slice(fromIdx, toIdx + 1)
+    : [...shapeCoords.slice(toIdx, fromIdx + 1)].reverse();
+
+  return sliced.length >= 2
+    ? sliced
+    : buildFallbackSegmentCoordinates(rideStep, candidate, stopsById);
+}
+
 function buildRideSteps(pathEdges, stopsById) {
   if (pathEdges.length === 0) {
     return [];
@@ -27,7 +117,9 @@ function buildRideSteps(pathEdges, stopsById) {
     signboard: pathEdges[0].signboard,
     fromStopId: pathEdges[0].fromStopId,
     toStopId: pathEdges[0].toStopId,
-    stopCount: 1
+    stopCount: 1,
+    edgeStartIndex: 0,
+    edgeEndIndex: 0
   };
 
   for (let i = 1; i < pathEdges.length; i += 1) {
@@ -45,10 +137,17 @@ function buildRideSteps(pathEdges, stopsById) {
       signboard: edge.signboard,
       fromStopId: edge.fromStopId,
       toStopId: edge.toStopId,
-      stopCount: 1
+      stopCount: 1,
+      edgeStartIndex: i,
+      edgeEndIndex: i
     };
   }
   segments.push(currentSegment);
+
+  // Keep edge ranges so map rendering can trace each ride segment through all intermediate stops.
+  for (const segment of segments) {
+    segment.edgeEndIndex = segment.edgeStartIndex + segment.stopCount - 1;
+  }
 
   return segments.map((segment) => {
     const fromStop = stopsById.get(segment.fromStopId);
@@ -57,6 +156,11 @@ function buildRideSteps(pathEdges, stopsById) {
     return {
       mode: segment.routeType,
       signboard: segment.signboard,
+      routeId: segment.routeId,
+      fromStopId: segment.fromStopId,
+      toStopId: segment.toStopId,
+      edgeStartIndex: segment.edgeStartIndex,
+      edgeEndIndex: segment.edgeEndIndex,
       instruction: `Sakay ng ${segment.routeType} na may signboard na "${segment.signboard}" mula ${fromStop?.name || "origin stop"} hanggang ${toStop?.name || "destination stop"}.`,
       from: fromStop?.name || "Unknown stop",
       to: toStop?.name || "Unknown stop",
@@ -71,7 +175,8 @@ function summarizeCandidate(candidate, context) {
     destinationText,
     originStops,
     destinationStops,
-    stopsById
+    stopsById,
+    routeShapePointsMap
   } = context;
 
   const rideSteps = buildRideSteps(candidate.pathEdges, stopsById);
@@ -104,19 +209,93 @@ function summarizeCandidate(candidate, context) {
     }
   ];
 
+  const mapSegments = rideSteps
+    .map((rideStep, index) => {
+      const coordinates = buildSegmentCoordinates(rideStep, candidate, stopsById, routeShapePointsMap);
+
+      if (coordinates.length < 2) {
+        return null;
+      }
+
+      return {
+        mode: rideStep.mode,
+        signboard: rideStep.signboard,
+        from: rideStep.from,
+        to: rideStep.to,
+        instruction: rideStep.instruction,
+        segmentIndex: index + 1,
+        coordinates
+      };
+    })
+    .filter(Boolean);
+
   const pathCoordinates = [];
-  if (candidate.pathEdges.length > 0) {
-    const firstStop = stopsById.get(candidate.pathEdges[0].fromStopId);
-    if (firstStop) {
-      pathCoordinates.push([Number(firstStop.longitude), Number(firstStop.latitude)]);
+  for (const segment of mapSegments) {
+    if (pathCoordinates.length === 0) {
+      pathCoordinates.push(segment.coordinates[0]);
+      continue;
     }
 
-    for (const edge of candidate.pathEdges) {
-      const stop = stopsById.get(edge.toStopId);
-      if (stop) {
-        pathCoordinates.push([Number(stop.longitude), Number(stop.latitude)]);
+    for (const coord of segment.coordinates) {
+      const prev = pathCoordinates[pathCoordinates.length - 1];
+      if (!prev || prev[0] !== coord[0] || prev[1] !== coord[1]) {
+        pathCoordinates.push(coord);
       }
     }
+  }
+
+  const mapMarkers = [];
+  if (mapSegments.length > 0) {
+    mapMarkers.push({
+      kind: "start",
+      label: "Start",
+      stop: mapSegments[0].from,
+      coordinates: mapSegments[0].coordinates[0],
+      instruction: steps[0]?.instruction || `Start at ${mapSegments[0].from}.`
+    });
+
+    for (const segment of mapSegments) {
+      mapMarkers.push({
+        kind: "ride_start",
+        label: "Ride",
+        stop: segment.from,
+        coordinates: segment.coordinates[0],
+        instruction: segment.instruction
+      });
+
+      mapMarkers.push({
+        kind: "ride_end",
+        label: "Get off",
+        stop: segment.to,
+        coordinates: segment.coordinates[segment.coordinates.length - 1],
+        instruction: `Bumaba sa ${segment.to}.`
+      });
+    }
+
+    for (let i = 1; i < mapSegments.length; i += 1) {
+      const previous = mapSegments[i - 1];
+      const current = mapSegments[i];
+      const hasTransfer =
+        previous.signboard !== current.signboard || previous.mode !== current.mode;
+
+      if (hasTransfer) {
+        mapMarkers.push({
+          kind: "transfer",
+          label: "Transfer",
+          stop: current.from,
+          coordinates: current.coordinates[0],
+          instruction: `Transfer at ${current.from}. Then ${current.instruction}`
+        });
+      }
+    }
+
+    mapMarkers.push({
+      kind: "end",
+      label: "End",
+      stop: mapSegments[mapSegments.length - 1].to,
+      coordinates: mapSegments[mapSegments.length - 1].coordinates[mapSegments[mapSegments.length - 1].coordinates.length - 1],
+      instruction: steps[steps.length - 1]?.instruction || `Arrive near ${mapSegments[mapSegments.length - 1].to}.`
+    });
   }
 
   return {
@@ -124,7 +303,9 @@ function summarizeCandidate(candidate, context) {
     estimatedMinutes,
     estimatedFare,
     transfers: candidate.transfers,
-    pathCoordinates
+    pathCoordinates,
+    mapSegments,
+    mapMarkers
   };
 }
 
@@ -165,7 +346,9 @@ function pickRouteOptions(candidates) {
 }
 
 export async function searchCommuteRoutes({ originText, destinationText, originCoords, destinationCoords }) {
-  const [originStops, destinationStops, graph] = await Promise.all([
+  const bounds = buildSearchBounds(originCoords, destinationCoords, env.routeSearchGraphBufferKm);
+
+  const [originStops, destinationStops, boundedGraph, routeShapePointsMap] = await Promise.all([
     findNearbyStops({
       lat: originCoords.latitude,
       lng: originCoords.longitude,
@@ -176,8 +359,17 @@ export async function searchCommuteRoutes({ originText, destinationText, originC
       lng: destinationCoords.longitude,
       radiusMeters: env.routeSearchRadiusMeters
     }),
-    getTransitGraph()
+    getTransitGraphWithinBounds(bounds),
+    getRouteShapePointsMap()
   ]);
+
+  const graphNeedsFallback =
+    boundedGraph.stopsById.size === 0 ||
+    boundedGraph.adjacency.size === 0 ||
+    !originStops.some((stop) => boundedGraph.stopsById.has(stop.id)) ||
+    !destinationStops.some((stop) => boundedGraph.stopsById.has(stop.id));
+
+  const graph = graphNeedsFallback ? await getTransitGraph() : boundedGraph;
 
   if (originStops.length === 0 || destinationStops.length === 0) {
     return { routes: [] };
@@ -250,13 +442,15 @@ export async function searchCommuteRoutes({ originText, destinationText, originC
     destinationText,
     originStops,
     destinationStops,
-    stopsById: graph.stopsById
+    stopsById: graph.stopsById,
+    routeShapePointsMap
   }));
 
   return {
     routes: pickRouteOptions(scored),
     meta: {
       candidateCount: candidates.length,
+      graphScope: graphNeedsFallback ? "full_fallback" : "bounded",
       searchedStops: {
         origin: originStops.length,
         destination: destinationStops.length

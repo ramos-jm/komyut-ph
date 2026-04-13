@@ -1,0 +1,42 @@
+name: Neon Overpass Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every Monday at 02:00 UTC
+    - cron: "0 2 * * 1"
+
+concurrency:
+  group: neon-overpass-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Overpass sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL: ${{ vars.DATABASE_SSL || 'require' }}
+          IMPORT_DEFAULT_REGION: ${{ vars.IMPORT_DEFAULT_REGION || 'metro-manila' }}
+          IMPORT_DEFAULT_BBOX: ${{ vars.IMPORT_DEFAULT_BBOX || '14.35,120.85,14.83,121.20' }}
+          IMPORT_DEFAULT_LIMIT: ${{ vars.IMPORT_DEFAULT_LIMIT || '500' }}
+        run: node scripts/sync-data.js

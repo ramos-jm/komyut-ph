@@ -39,6 +39,7 @@ jeyem/
   db/
     schema.sql
     seed.sql
+    seed_qc_pasay.sql
   .gitignore
   README.md
 ```
@@ -144,22 +145,19 @@ psql -d ph_commute_guide -f db/schema.sql
 psql -d ph_commute_guide -f db/seed.sql
 ```
 
-### Neon setup (recommended)
+### Optional: Apply seed profiles
 
-1. Create a Neon project and a database named `ph_commute_guide`.
-2. Copy the pooled connection string from Neon.
-3. In `backend/.env`, set `DATABASE_URL` to the pooled Neon URL.
-4. Ensure the URL contains `?sslmode=require`.
-5. Open Neon SQL Editor and run:
-  - `db/schema.sql`
-  - `db/seed.sql`
-6. Start backend from `backend/`:
+From `backend/`:
 
 ```bash
-npm run dev
+npm run db:seed:profile
 ```
 
-If PostGIS extension creation is blocked on your Neon plan/tier, use Supabase Postgres (free tier) and run the same `db/schema.sql` and `db/seed.sql` scripts there.
+Apply QC to Pasay commute-focused profile:
+
+```bash
+npm run db:seed:qc-pasay
+```
 
 ## Run locally
 
@@ -223,6 +221,13 @@ Included tests:
 - Cached route search responses
 - Cached saved routes responses
 - Local fallback in `localStorage` for last search and saved routes
+
+## Location-assisted origin
+
+- The frontend supports a `Use my location` action.
+- It requests browser geolocation permission and calls `GET /stops/nearby`.
+- If a nearby stop exists, it auto-fills origin with the closest stop name.
+- If not available or denied, user can continue with manual origin input.
 
 ## Notes for production hardening
 
