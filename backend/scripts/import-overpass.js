@@ -3,7 +3,14 @@ import { pool, withTransaction } from "../src/db/pool.js";
 import { env } from "../src/config/env.js";
 import { resolveRegionConfig } from "../src/config/regions.js";
 
-const OVERPASS_URL = "https://overpass-api.de/api/interpreter";
+const OVERPASS_URLS = (
+  process.env.OVERPASS_URLS
+    ? process.env.OVERPASS_URLS.split(",").map((url) => url.trim()).filter(Boolean)
+    : [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter"
+      ]
+);
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -124,21 +131,59 @@ out body;
 }
 
 async function fetchOverpass(query) {
-  const response = await fetch(OVERPASS_URL, {
-    method: "POST",
-    body: query,
-    headers: {
-      "Content-Type": "text/plain",
-      "User-Agent": "PH-Commute-Guide-Importer/1.0"
-    }
-  });
+  const maxAttemptsPerEndpoint = 3;
+  let lastError = null;
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Overpass request failed: ${response.status} ${text}`);
+  for (const overpassUrl of OVERPASS_URLS) {
+    for (let attempt = 1; attempt <= maxAttemptsPerEndpoint; attempt += 1) {
+      try {
+        const response = await fetch(overpassUrl, {
+          method: "POST",
+          body: query,
+          headers: {
+            "Content-Type": "text/plain",
+            "User-Agent": "PH-Commute-Guide-Importer/1.0"
+          }
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          const isRetriable =
+            response.status >= 500 ||
+            response.status === 429 ||
+            /too busy|timeout|dispatcher_client::request_read_and_idx::timeout/i.test(text);
+
+          const error = new Error(`Overpass request failed: ${response.status} ${text}`);
+          if (!isRetriable) {
+            throw error;
+          }
+
+          lastError = error;
+          const delayMs = attempt * 2000;
+          console.warn(
+            `Overpass busy at ${overpassUrl} (attempt ${attempt}/${maxAttemptsPerEndpoint}). Retrying in ${delayMs}ms...`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+
+        return response.json();
+      } catch (error) {
+        lastError = error;
+        const delayMs = attempt * 2000;
+
+        if (attempt < maxAttemptsPerEndpoint) {
+          console.warn(
+            `Overpass request error at ${overpassUrl} (attempt ${attempt}/${maxAttemptsPerEndpoint}): ${error.message}`
+          );
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+      }
+    }
   }
 
-  return response.json();
+  throw lastError || new Error("Overpass request failed after retries.");
 }
 
 async function upsertStop(client, node, ingestRunId, metrics) {

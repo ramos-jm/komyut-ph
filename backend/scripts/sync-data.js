@@ -1,7 +1,7 @@
 import { spawn } from "child_process";
 import { promises as fs } from "fs";
 import dotenv from "dotenv";
-import { resolveRegionConfig } from "../src/config/regions.js";
+import { REGION_CONFIG, resolveRegionConfig } from "../src/config/regions.js";
 import { env } from "../src/config/env.js";
 
 dotenv.config();
@@ -20,7 +20,7 @@ function runCommand(command, args = []) {
 
     const proc = spawn(command, args, {
       stdio: "inherit",
-      shell: true,
+      shell: false,
     });
 
     proc.on("close", (code) => {
@@ -37,6 +37,18 @@ function runCommand(command, args = []) {
   });
 }
 
+async function runImport(regionKey, bbox, importLimit) {
+  await runCommand("node", [
+    "scripts/import-overpass.js",
+    "--region",
+    regionKey,
+    "--bbox",
+    bbox,
+    "--limit",
+    String(importLimit)
+  ]);
+}
+
 async function main() {
   console.log("🔄 Transit Data Sync - Overpass Only");
   console.log("=====================================");
@@ -51,15 +63,28 @@ async function main() {
 
     // Run import (from backend directory, so path is scripts/import-overpass.js)
     console.log("📍 Importing latest data from OpenStreetMap...");
-    await runCommand("node", [
-      "scripts/import-overpass.js",
-      "--region",
-      region.regionKey,
-      "--bbox",
-      region.bbox,
-      "--limit",
-      String(importLimit)
-    ]);
+    try {
+      await runImport(region.regionKey, region.bbox, importLimit);
+    } catch (error) {
+      const shouldSplitCombinedRegion = region.regionKey === "metro-manila-calabarzon";
+
+      if (!shouldSplitCombinedRegion) {
+        throw error;
+      }
+
+      const metroBbox = REGION_CONFIG["metro-manila"]?.bbox;
+      const calabarzonBbox = REGION_CONFIG.calabarzon?.bbox;
+
+      if (!metroBbox || !calabarzonBbox) {
+        throw error;
+      }
+
+      const splitLimit = Math.min(importLimit, 400);
+
+      console.log("⚠️  Combined import failed; retrying in two regional passes for stability...");
+      await runImport("metro-manila", metroBbox, splitLimit);
+      await runImport("calabarzon", calabarzonBbox, splitLimit);
+    }
 
     console.log("");
     console.log("✅ Data sync complete!");

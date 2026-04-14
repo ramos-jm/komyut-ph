@@ -39,7 +39,6 @@ jeyem/
   db/
     schema.sql
     seed.sql
-    seed_qc_pasay.sql
   .gitignore
   README.md
 ```
@@ -145,19 +144,22 @@ psql -d ph_commute_guide -f db/schema.sql
 psql -d ph_commute_guide -f db/seed.sql
 ```
 
-### Optional: Apply seed profiles
+### Neon setup (recommended)
 
-From `backend/`:
+1. Create a Neon project and a database named `ph_commute_guide`.
+2. Copy the pooled connection string from Neon.
+3. In `backend/.env`, set `DATABASE_URL` to the pooled Neon URL.
+4. Ensure the URL contains `?sslmode=require`.
+5. Open Neon SQL Editor and run:
+  - `db/schema.sql`
+  - `db/seed.sql`
+6. Start backend from `backend/`:
 
 ```bash
-npm run db:seed:profile
+npm run dev
 ```
 
-Apply QC to Pasay commute-focused profile:
-
-```bash
-npm run db:seed:qc-pasay
-```
+If PostGIS extension creation is blocked on your Neon plan/tier, use Supabase Postgres (free tier) and run the same `db/schema.sql` and `db/seed.sql` scripts there.
 
 ## Run locally
 
@@ -182,7 +184,7 @@ npm run import:overpass
 Optional args:
 
 ```bash
-npm run import:overpass -- --bbox "14.35,120.85,14.83,121.20" --limit 300
+npm run import:overpass -- --bbox "13.80,120.55,14.83,122.10" --limit 900
 ```
 
 This importer ingests public-transport stops and route relations from Overpass data, then maps them into `stops`, `routes`, and `route_stops`.
@@ -221,13 +223,6 @@ Included tests:
 - Cached route search responses
 - Cached saved routes responses
 - Local fallback in `localStorage` for last search and saved routes
-
-## Location-assisted origin
-
-- The frontend supports a `Use my location` action.
-- It requests browser geolocation permission and calls `GET /stops/nearby`.
-- If a nearby stop exists, it auto-fills origin with the closest stop name.
-- If not available or denied, user can continue with manual origin input.
 
 ## Notes for production hardening
 

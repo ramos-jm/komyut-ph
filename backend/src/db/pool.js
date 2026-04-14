@@ -3,28 +3,51 @@ import { env } from "../config/env.js";
 
 const { Pool } = pg;
 
-function resolveSslConfig() {
-  if (env.databaseSsl === "true") {
-    return { rejectUnauthorized: false };
-  }
+function resolveSslConfig(databaseUrl, nodeEnv) {
+  const databaseSsl = process.env.DATABASE_SSL;
 
-  if (env.databaseSsl === "false") {
+  if (databaseSsl === "false") {
     return false;
   }
 
-  const parsed = new URL(env.databaseUrl);
-  const host = parsed.hostname.toLowerCase();
-  const isLocalHost = host === "localhost" || host === "127.0.0.1" || host === "::1";
-  return isLocalHost ? false : { rejectUnauthorized: false };
+  if (databaseSsl === "true") {
+    return { rejectUnauthorized: false };
+  }
+
+  try {
+    const parsed = new URL(databaseUrl);
+    const sslMode = parsed.searchParams.get("sslmode");
+
+    if (sslMode && sslMode !== "disable") {
+      return { rejectUnauthorized: false };
+    }
+
+    if (parsed.hostname.endsWith(".neon.tech")) {
+      return { rejectUnauthorized: false };
+    }
+  } catch {
+    // Use environment defaults below when URL parsing fails.
+  }
+
+  return nodeEnv === "production" ? { rejectUnauthorized: false } : false;
 }
 
 export const pool = new Pool({
   connectionString: env.databaseUrl,
-  ssl: resolveSslConfig()
+  ssl: resolveSslConfig(env.databaseUrl, env.nodeEnv)
+});
+
+pool.on("error", (error) => {
+  console.error("PostgreSQL pool error:", error.message);
 });
 
 export async function withTransaction(callback) {
   const client = await pool.connect();
+  const onClientError = (error) => {
+    console.error("PostgreSQL client error:", error.message);
+  };
+
+  client.on("error", onClientError);
   try {
     await client.query("BEGIN");
     const result = await callback(client);
@@ -34,6 +57,7 @@ export async function withTransaction(callback) {
     await client.query("ROLLBACK");
     throw error;
   } finally {
+    client.off("error", onClientError);
     client.release();
   }
 }
