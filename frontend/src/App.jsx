@@ -1,8 +1,43 @@
-import { useEffect, useMemo, useState } from "react";
-import MapView from "./components/MapView.jsx";
+import { Suspense, lazy, useEffect, useMemo, useState } from "react";
 import RouteCards from "./components/RouteCards.jsx";
 import StopAutocomplete from "./components/StopAutocomplete.jsx";
 import { fetchTrainInfo, getNearbyStops, getSavedRoutes, saveRoute, searchRoute } from "./lib/api.js";
+
+const MapView = lazy(() => import("./components/MapView.jsx"));
+
+function getTrainLinePalette(line) {
+  const normalized = String(line || "").toUpperCase();
+
+  if (normalized.includes("MRT-3")) {
+    return {
+      dot: "bg-sky-400",
+      label: "text-sky-700",
+      ring: "ring-sky-200"
+    };
+  }
+
+  if (normalized.includes("LRT-1")) {
+    return {
+      dot: "bg-amber-500",
+      label: "text-amber-700",
+      ring: "ring-amber-200"
+    };
+  }
+
+  if (normalized.includes("LRT-2")) {
+    return {
+      dot: "bg-rose-500",
+      label: "text-rose-700",
+      ring: "ring-rose-200"
+    };
+  }
+
+  return {
+    dot: "bg-emerald-500",
+    label: "text-emerald-700",
+    ring: "ring-emerald-200"
+  };
+}
 
 export default function App() {
   const [origin, setOrigin] = useState("");
@@ -14,6 +49,7 @@ export default function App() {
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
   const [locationHint, setLocationHint] = useState("");
+  const [selectedRouteType, setSelectedRouteType] = useState("fastest");
 
   useEffect(() => {
     fetchTrainInfo()
@@ -30,7 +66,26 @@ export default function App() {
       });
   }, []);
 
-  const activeRoute = useMemo(() => result?.routes?.[0] || null, [result]);
+  useEffect(() => {
+    if (result?.routes?.length) {
+      setSelectedRouteType(result.routes[0].type);
+    }
+  }, [result]);
+
+  useEffect(() => {
+    // Warm this split chunk when the user starts searching to reduce map loading wait.
+    if (origin || destination || result?.routes?.length) {
+      import("./components/MapView.jsx");
+    }
+  }, [origin, destination, result]);
+
+  const activeRoute = useMemo(() => {
+    if (!result?.routes?.length) {
+      return null;
+    }
+
+    return result.routes.find((route) => route.type === selectedRouteType) || result.routes[0];
+  }, [result, selectedRouteType]);
 
   async function handleSearch(event) {
     event.preventDefault();
@@ -112,9 +167,12 @@ export default function App() {
   }
 
   async function handleSave(route) {
+    const originText = typeof origin === "string" ? origin : origin?.name || "";
+    const destinationText = typeof destination === "string" ? destination : destination?.name || "";
+
     const payload = {
-      origin_text: origin,
-      destination_text: destination,
+      origin_text: originText,
+      destination_text: destinationText,
       route_data: route,
       user_id: null
     };
@@ -136,26 +194,63 @@ export default function App() {
     }
   }
 
+  function handleRestoreSavedRoute(item) {
+    const restoredRouteRaw = item?.route_data;
+    let restoredRoute = restoredRouteRaw;
+
+    if (typeof restoredRouteRaw === "string") {
+      try {
+        restoredRoute = JSON.parse(restoredRouteRaw);
+      } catch {
+        restoredRoute = null;
+      }
+    }
+
+    if (!restoredRoute || typeof restoredRoute !== "object") {
+      setError("Hindi ma-restore ang saved route na ito. Invalid route data.");
+      return;
+    }
+
+    const normalizedType = restoredRoute.type || "fastest";
+    const normalizedRoute = {
+      ...restoredRoute,
+      type: normalizedType
+    };
+
+    setOrigin(item.origin_text || "");
+    setDestination(item.destination_text || "");
+    setResult({ routes: [normalizedRoute] });
+    setSelectedRouteType(normalizedType);
+    setError("");
+  }
+
   return (
-    <main className="min-h-screen bg-gradient-to-br from-rice via-sky-50 to-amber-50 px-4 py-8 md:px-8">
-      <section className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1.1fr_0.9fr]">
+    <main className="min-h-screen bg-canvas px-4 py-8 md:px-7 xl:px-10">
+      <section className="mx-auto grid w-full max-w-7xl gap-6 lg:grid-cols-[1.18fr_0.82fr]">
         <div className="space-y-5">
-          <header className="rounded-3xl bg-ink p-6 text-white shadow-card">
-            <h1 className="text-3xl font-black tracking-tight">PH Commute Guide</h1>
-            <p className="mt-2 text-sm text-white/80">Alamin kung ano ang sasakyan mo mula Point A hanggang Point B.</p>
+          <header className="surface-accent rounded-[2rem] p-6 md:p-8">
+            <p className="inline-flex rounded-full border border-white/30 bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/90">
+              Commute Intelligence
+            </p>
+            <h1 className="mt-4 text-3xl font-black tracking-tight text-white md:text-4xl">Komyut PH</h1>
+            <p className="mt-2 max-w-2xl text-sm text-white/80 md:text-base">
+              Smart friend mo sa biyahe. Compare fastest, least transfer, at budget-friendly routes in one view.
+            </p>
           </header>
 
-          <form onSubmit={handleSearch} className="rounded-2xl bg-white p-5 shadow-card">
+          <form onSubmit={handleSearch} className="surface-card rounded-[1.6rem] p-5 md:p-6">
             <div className="grid gap-3 md:grid-cols-2">
               <div>
+                <label htmlFor="origin-input" className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Origin</label>
                 <StopAutocomplete
+                  inputId="origin-input"
                   value={origin}
                   onChange={setOrigin}
-                  placeholder="Origin (hal. Recto Manila)"
+                  placeholder="Hal. Recto Manila"
                   disabled={loading || locating}
                 />
                 <button
-                  className="mt-2 rounded-xl border border-sea px-3 py-1.5 text-xs font-semibold text-sea transition hover:bg-sky-50 disabled:opacity-60"
+                  className="mt-2 inline-flex items-center rounded-xl border border-cyan-500/30 bg-cyan-50 px-3 py-1.5 text-xs font-semibold text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-60"
                   type="button"
                   onClick={handleUseMyLocation}
                   disabled={locating}
@@ -163,52 +258,116 @@ export default function App() {
                   {locating ? "Kinukuha ang location..." : "Use my location"}
                 </button>
               </div>
-              <StopAutocomplete
-                value={destination}
-                onChange={setDestination}
-                placeholder="Destination (hal. Cubao QC)"
-                disabled={loading || locating}
-              />
+
+              <div>
+                <label htmlFor="destination-input" className="mb-1.5 block text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">Destination</label>
+                <StopAutocomplete
+                  inputId="destination-input"
+                  value={destination}
+                  onChange={setDestination}
+                  placeholder="Hal. Cubao QC"
+                  disabled={loading || locating}
+                />
+              </div>
             </div>
-            {locationHint ? <p className="mt-2 text-xs text-ink/70">{locationHint}</p> : null}
-            <button
-              className="mt-3 rounded-xl bg-sea px-5 py-2 text-sm font-semibold text-white transition hover:opacity-90 disabled:opacity-60"
-              type="submit"
-              disabled={loading || locating}
-            >
-              {loading ? "Naghahanap ng ruta..." : "Search Route"}
-            </button>
-            {error ? <p className="mt-2 text-sm text-red-600">{error}</p> : null}
+
+            {locationHint ? <p className="mt-3 text-xs text-slate-600">{locationHint}</p> : null}
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                className="rounded-xl bg-cyan-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-cyan-500 disabled:opacity-60"
+                type="submit"
+                disabled={loading || locating}
+              >
+                {loading ? "Naghahanap ng ruta..." : "Search Route"}
+              </button>
+              {result?.routes?.length ? (
+                <p className="text-xs font-medium text-slate-600">{result.routes.length} route option(s) available</p>
+              ) : null}
+            </div>
+
+            {error ? <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
           </form>
 
-          <MapView activeRoute={activeRoute} />
-          <RouteCards routes={result?.routes || []} onSave={handleSave} />
+          <Suspense
+            fallback={
+              <div className="surface-card flex h-[420px] w-full items-center justify-center rounded-[1.6rem] p-6 text-sm text-slate-600">
+                Loading map experience...
+              </div>
+            }
+          >
+            <MapView
+              routes={result?.routes || []}
+              selectedRouteType={activeRoute?.type || selectedRouteType}
+              onSelectRoute={setSelectedRouteType}
+            />
+          </Suspense>
+
+          <RouteCards
+            routes={result?.routes || []}
+            selectedRouteType={activeRoute?.type || selectedRouteType}
+            onSelectRoute={setSelectedRouteType}
+            onSave={handleSave}
+          />
         </div>
 
         <aside className="space-y-5">
-          <div className="rounded-2xl bg-white p-5 shadow-card">
-            <h2 className="text-lg font-bold text-ink">Train First/Last Trip</h2>
-            <ul className="mt-3 space-y-2 text-sm text-ink/80">
-              {trainInfo.map((line) => (
-                <li key={line.line} className="rounded-xl border border-slate-100 p-3">
-                  <p className="font-semibold">{line.line}</p>
-                  <p>First Trip: {line.firstTrip}</p>
-                  <p>Last Trip: {line.lastTrip}</p>
-                </li>
-              ))}
-            </ul>
+          <div className="surface-card rounded-[1.6rem] p-5 md:p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-extrabold tracking-tight text-slate-900">Rail Timetable</h2>
+              <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.15em] text-white">Live look</span>
+            </div>
+
+            <div className="overflow-hidden rounded-2xl border border-slate-100">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-50 text-[11px] uppercase tracking-[0.12em] text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2.5 font-semibold">Line</th>
+                    <th className="px-4 py-2.5 font-semibold">First Trip</th>
+                    <th className="px-4 py-2.5 font-semibold">Last Trip</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trainInfo.map((line) => {
+                    const palette = getTrainLinePalette(line.line);
+
+                    return (
+                      <tr key={line.line} className="border-t border-slate-100 bg-white hover:bg-slate-50/70">
+                        <td className="px-4 py-3">
+                          <div className="inline-flex items-center gap-2">
+                            <span className={`h-2.5 w-2.5 rounded-full ${palette.dot}`} />
+                            <span className={`font-semibold ${palette.label}`}>{line.line}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 font-medium text-slate-700">{line.firstTrip}</td>
+                        <td className="px-4 py-3 font-medium text-slate-700">{line.lastTrip}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <p className="mt-3 text-xs text-slate-500">Tip: Morning departures are usually lighter before 7:00 AM.</p>
           </div>
 
-          <div className="rounded-2xl bg-white p-5 shadow-card">
-            <h2 className="text-lg font-bold text-ink">Saved Routes</h2>
-            <ul className="mt-3 space-y-2 text-sm text-ink/80">
+          <div className="surface-card rounded-[1.6rem] p-5 md:p-6">
+            <h2 className="text-lg font-extrabold tracking-tight text-slate-900">Saved Routes</h2>
+            <ul className="mt-3 space-y-2 text-sm text-slate-700">
               {saved.slice(0, 8).map((item) => (
-                <li key={item.id} className="rounded-xl border border-slate-100 p-3">
-                  <p className="font-semibold">{item.origin_text} to {item.destination_text}</p>
-                  <p>{new Date(item.created_at).toLocaleString()}</p>
+                <li key={item.id} className="rounded-xl border border-slate-100 bg-slate-50/70 p-3">
+                  <button
+                    type="button"
+                    className="w-full text-left"
+                    onClick={() => handleRestoreSavedRoute(item)}
+                  >
+                    <p className="font-semibold text-slate-900">{item.origin_text} to {item.destination_text}</p>
+                    <p className="text-xs text-cyan-700">Tap to restore this route</p>
+                    <p className="text-xs text-slate-500">{new Date(item.created_at).toLocaleString()}</p>
+                  </button>
                 </li>
               ))}
-              {!saved.length ? <li>Wala pang saved routes.</li> : null}
+              {!saved.length ? <li className="text-sm text-slate-500">Wala pang saved routes.</li> : null}
             </ul>
           </div>
         </aside>

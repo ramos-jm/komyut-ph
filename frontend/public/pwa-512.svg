@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Komyut PH app icon">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#0e7490"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="108" fill="url(#bg)"/>
+  <path d="M148 136h216a36 36 0 0 1 36 36v146a76 76 0 0 1-76 76H188a76 76 0 0 1-76-76V172a36 36 0 0 1 36-36z" fill="#f1f5f9" opacity="0.95"/>
+  <rect x="176" y="186" width="160" height="50" rx="14" fill="#0ea5e9"/>
+  <circle cx="198" cy="314" r="25" fill="#0f172a"/>
+  <circle cx="314" cy="314" r="25" fill="#0f172a"/>
+  <path d="M130 404h252" stroke="#22d3ee" stroke-width="20" stroke-linecap="round"/>
+</svg>

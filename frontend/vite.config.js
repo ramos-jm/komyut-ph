@@ -12,11 +12,34 @@ export default defineConfig({
         name: "PH Commute Guide",
         short_name: "PH Commute",
         description: "Route-based commuting assistant for the Philippines",
+        id: "/",
         theme_color: "#0f172a",
         background_color: "#f8fafc",
         display: "standalone",
+        orientation: "portrait",
+        scope: "/",
         start_url: "/",
-        icons: []
+        categories: ["travel", "navigation", "productivity"],
+        icons: [
+          {
+            src: "/pwa-192.svg",
+            sizes: "192x192",
+            type: "image/svg+xml",
+            purpose: "any"
+          },
+          {
+            src: "/pwa-512.svg",
+            sizes: "512x512",
+            type: "image/svg+xml",
+            purpose: "any"
+          },
+          {
+            src: "/pwa-512.svg",
+            sizes: "512x512",
+            type: "image/svg+xml",
+            purpose: "maskable"
+          }
+        ]
       },
       workbox: {
         runtimeCaching: [

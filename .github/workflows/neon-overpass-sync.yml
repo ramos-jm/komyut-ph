@@ -13,7 +13,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60      # grid import takes longer — allow up to 1 hour
     defaults:
       run:
         working-directory: backend
@@ -32,11 +32,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Overpass sync
+      - name: Run grid-based Overpass sync
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_SSL: ${{ vars.DATABASE_SSL || 'require' }}
-          IMPORT_DEFAULT_REGION: ${{ vars.IMPORT_DEFAULT_REGION || 'metro-manila' }}
-          IMPORT_DEFAULT_BBOX: ${{ vars.IMPORT_DEFAULT_BBOX || '14.35,120.85,14.83,121.20' }}
-          IMPORT_DEFAULT_LIMIT: ${{ vars.IMPORT_DEFAULT_LIMIT || '500' }}
+          DATABASE_URL:            ${{ secrets.DATABASE_URL }}
+          DATABASE_SSL:            ${{ vars.DATABASE_SSL || 'require' }}
+          IMPORT_DEFAULT_REGION:   ${{ vars.IMPORT_DEFAULT_REGION || 'metro-manila-calabarzon' }}
+          IMPORT_DEFAULT_BBOX:     ${{ vars.IMPORT_DEFAULT_BBOX   || '13.80,120.55,14.83,122.10' }}
+          IMPORT_DEFAULT_LIMIT:    ${{ vars.IMPORT_DEFAULT_LIMIT  || '500' }}
+          # Grid splits the region into smaller cells so Overpass never times out
+          IMPORT_GRID_LAT:         ${{ vars.IMPORT_GRID_LAT || '3' }}
+          IMPORT_GRID_LNG:         ${{ vars.IMPORT_GRID_LNG || '4' }}
         run: node scripts/sync-data.js

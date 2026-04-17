@@ -4,29 +4,39 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nodemon src/server.js",
-    "start": "node src/server.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "import:overpass": "node scripts/import-overpass.js",
-    "db:setup": "node scripts/setup-db.js",
-    "db:seed:profile": "node scripts/apply-seed-profile.js",
+    "dev":              "nodemon src/server.js",
+    "start":            "node src/server.js",
+    "test":             "vitest run",
+    "test:watch":       "vitest",
+
+    "db:setup":         "node scripts/setup-db.js",
+    "db:seed:profile":  "node scripts/apply-seed-profile.js",
     "db:seed:qc-pasay": "node scripts/apply-seed-profile.js --profile qc-pasay",
-    "sync-data": "node scripts/sync-data.js",
-    "import:rollback": "node scripts/rollback-ingest-run.js"
+
+    "sync-data":        "node scripts/sync-data.js",
+
+    "import:overpass":  "node scripts/import-overpass.js",
+    "import:mm":        "node scripts/import-overpass.js --region metro-manila --grid-lat 2 --grid-lng 2 --limit 400",
+    "import:calabarzon":"node scripts/import-overpass.js --region calabarzon    --grid-lat 2 --grid-lng 3 --limit 400",
+    "import:full":      "node scripts/import-overpass.js --region metro-manila-calabarzon --grid-lat 3 --grid-lng 4 --limit 500",
+
+    "import:geofabrik": "node scripts/import-geofabrik.js",
+    "import:geofabrik:reuse": "node scripts/import-geofabrik.js --skip-download",
+
+    "import:rollback":  "node scripts/rollback-ingest-run.js"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "helmet": "^7.1.0",
+    "cors":       "^2.8.5",
+    "dotenv":     "^16.4.5",
+    "express":    "^4.19.2",
+    "helmet":     "^7.1.0",
     "node-fetch": "^3.3.2",
-    "pg": "^8.12.0",
-    "zod": "^3.23.8"
+    "pg":         "^8.12.0",
+    "zod":        "^3.23.8"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4",
-    "supertest": "^7.0.0",
-    "vitest": "^2.0.5"
+    "nodemon":    "^3.1.4",
+    "supertest":  "^7.0.0",
+    "vitest":     "^2.0.5"
   }
 }

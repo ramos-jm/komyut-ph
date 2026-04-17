@@ -1,12 +1,38 @@
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700&display=swap");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: "Segoe UI", "Poppins", sans-serif;
+  font-family: "Plus Jakarta Sans", "Segoe UI", sans-serif;
   color: #0f172a;
 }
 
 body {
   margin: 0;
+  background: radial-gradient(circle at 10% 20%, #e0f2fe 0%, transparent 40%),
+    radial-gradient(circle at 85% 0%, #fff7ed 0%, transparent 45%),
+    #f4f8fb;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@layer components {
+  .bg-canvas {
+    background: radial-gradient(circle at 0 10%, #e0f2fe 0%, transparent 35%),
+      radial-gradient(circle at 100% 0, #fed7aa 0%, transparent 30%),
+      linear-gradient(180deg, #f8fbfd 0%, #eff4f8 100%);
+  }
+
+  .surface-card {
+    @apply border border-slate-100 bg-white/90 shadow-card ring-1 ring-white/70 backdrop-blur;
+  }
+
+  .surface-accent {
+    background: linear-gradient(140deg, #0f172a 0%, #164e63 52%, #0e7490 100%);
+    box-shadow: 0 24px 52px rgba(15, 23, 42, 0.28);
+  }
 }
