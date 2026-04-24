@@ -94,3 +94,16 @@ export async function searchStops(query) {
 
   return response.json();
 }
+
+export async function fetchAvailableCatalog(limit = 1000) {
+  const url = new URL(`${API_BASE_URL}/catalog/available`);
+  url.searchParams.set("limit", String(limit));
+
+  const response = await fetch(url.toString());
+  if (!response.ok) {
+    const message = await parseErrorMessage(response, "Failed to load available catalog");
+    throw new Error(message);
+  }
+
+  return response.json();
+}

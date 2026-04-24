@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { pool } from "../db/pool.js";
-import { getRouteById, findNearbyStops, searchStopsByName } from "../repositories/transitRepository.js";
+import { getAvailableCatalog, getRouteById, findNearbyStops, searchStopsByName } from "../repositories/transitRepository.js";
 import { geocodePlace } from "../services/geocodingService.js";
 import { searchCommuteRoutes } from "../services/routingService.js";
 
@@ -24,6 +24,10 @@ const saveSchema = z.object({
 
 const searchStopsSchema = z.object({
   q: z.string().min(1).max(100)
+});
+
+const availableCatalogSchema = z.object({
+  limit: z.coerce.number().int().min(50).max(5000).optional()
 });
 
 export async function searchRoute(req, res, next) {
@@ -151,4 +155,14 @@ export async function getTrainInfo(_req, res) {
     ],
     disclaimer: "Reference schedule only. Verify updates from official operators."
   });
+}
+
+export async function getAvailableCatalogList(req, res, next) {
+  try {
+    const { limit } = availableCatalogSchema.parse(req.query);
+    const data = await getAvailableCatalog({ limit: limit || 1000 });
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
 }

@@ -14,6 +14,11 @@
     "db:seed:qc-pasay": "node scripts/apply-seed-profile.js --profile qc-pasay",
 
     "sync-data":        "node scripts/sync-data.js",
+    "source-truth:import": "node scripts/import-source-truth.js",
+    "benchmark:run": "node scripts/run-benchmark.js",
+    "import:health": "node scripts/import-health-report.js",
+    "manual-route:generate": "node scripts/generate-manual-route.js",
+    "manual-route:import": "node scripts/import-manual-route.js",
 
     "import:overpass":  "node scripts/import-overpass.js",
     "import:mm":        "node scripts/import-overpass.js --region metro-manila --grid-lat 2 --grid-lng 2 --limit 400",

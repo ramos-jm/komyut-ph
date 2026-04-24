@@ -1,0 +1,30 @@
+[
+  {
+    "case_key": "moa_to_fairview",
+    "origin_text": "Mall of Asia",
+    "destination_text": "Fairview",
+    "expected": {
+      "has_route": true,
+      "transfer_point": "Quezon Ave",
+      "fare_min": 25,
+      "fare_max": 120,
+      "eta_min": 35,
+      "eta_max": 180
+    },
+    "notes": "Public-visible benchmark snapshot reference"
+  },
+  {
+    "case_key": "pitx_to_smnorth",
+    "origin_text": "PITX",
+    "destination_text": "SM North",
+    "expected": {
+      "has_route": true,
+      "transfer_point": "EDSA",
+      "fare_min": 20,
+      "fare_max": 120,
+      "eta_min": 30,
+      "eta_max": 180
+    },
+    "notes": "Tune ranges with actual public benchmark observations"
+  }
+]

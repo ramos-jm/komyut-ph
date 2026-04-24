@@ -1,0 +1,16 @@
+{
+  "routeName": "PITX to SM Fairview via Macapagal-Lawton-Quiapo-Espana-QC Circle-Commonwealth",
+  "signboard": "PITX-SM Fairview",
+  "mode": "bus",
+  "source": "manual-curation",
+  "checkpoints": [
+    "PITX",
+    "Macapagal Boulevard",
+    "Lawton Manila",
+    "Quiapo Church",
+    "Espana Boulevard Manila",
+    "Quezon Memorial Circle",
+    "Commonwealth Avenue Quezon City",
+    "SM Fairview"
+  ]
+}

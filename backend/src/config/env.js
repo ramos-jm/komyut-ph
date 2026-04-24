@@ -18,7 +18,17 @@ export const env = {
   nominatimBaseUrl: process.env.NOMINATIM_BASE_URL || "https://nominatim.openstreetmap.org",
   geocodeTtlDays: Number(process.env.GEOCODE_TTL_DAYS || 30),
   routeSearchRadiusMeters: Number(process.env.ROUTE_SEARCH_RADIUS_METERS || 1000),
+  routeSearchRadiiMeters: (process.env.ROUTE_SEARCH_RADII_METERS || "500,1000,1500,2500")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value > 0),
+  routeSearchMinStops: Number(process.env.ROUTE_SEARCH_MIN_STOPS || 3),
+  routeSearchStopLimit: Number(process.env.ROUTE_SEARCH_STOP_LIMIT || 40),
+  routeMaxTransfers: Number(process.env.ROUTE_MAX_TRANSFERS || 4),
+  routeMaxNodeVisits: Number(process.env.ROUTE_MAX_NODE_VISITS || 8000),
   routeSearchGraphBufferKm: Number(process.env.ROUTE_SEARCH_GRAPH_BUFFER_KM || 12),
+  moderationApiToken: process.env.MODERATION_API_TOKEN || "",
+  benchmarkApiBaseUrl: process.env.BENCHMARK_API_BASE_URL || `http://localhost:${Number(process.env.PORT || 4000)}/api`,
   importDefaultRegion: process.env.IMPORT_DEFAULT_REGION || "metro-manila",
   importDefaultBbox: process.env.IMPORT_DEFAULT_BBOX || "14.35,120.85,14.83,121.20",
   importDefaultLimit: Number(process.env.IMPORT_DEFAULT_LIMIT || 500)

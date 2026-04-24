@@ -1,0 +1,3 @@
+source,source_document,operator_name,route_code,route_name,mode,origin_label,destination_label,status,last_validated_at,confidence
+ltfrb,LTFRB-MANUAL-2026Q2,Sample Operator,R-001,Cubao - Fairview,jeep,Cubao,Fairview,active,2026-04-24,medium
+ltfrb,LTFRB-MANUAL-2026Q2,Sample Operator,B-101,PITX - SM North,bus,PITX,SM North,active,2026-04-24,medium

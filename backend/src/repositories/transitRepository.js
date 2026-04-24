@@ -253,3 +253,73 @@ export async function getRouteShapePoints(routeId) {
     throw error;
   }
 }
+
+export async function getAvailableCatalog({ limit = 1000 }) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 200, 50), 5000);
+
+  const summaryQuery = `
+    SELECT
+      (SELECT COUNT(*) FROM stops) AS total_stops,
+      (SELECT COUNT(*) FROM routes) AS total_routes;
+  `;
+
+  const routesQuery = `
+    SELECT
+      r.id,
+      r.name,
+      r.type,
+      r.signboard,
+      COUNT(rs.stop_id)::INT AS stop_count
+    FROM routes r
+    LEFT JOIN route_stops rs ON rs.route_id = r.id
+    GROUP BY r.id, r.name, r.type, r.signboard
+    ORDER BY r.type ASC, r.name ASC, r.id ASC
+    LIMIT $1;
+  `;
+
+  const stopsQuery = `
+    SELECT
+      s.id,
+      s.name,
+      s.type,
+      s.latitude,
+      s.longitude,
+      COUNT(DISTINCT rs.route_id)::INT AS route_count
+    FROM stops s
+    LEFT JOIN route_stops rs ON rs.stop_id = s.id
+    GROUP BY s.id, s.name, s.type, s.latitude, s.longitude
+    ORDER BY s.name ASC, s.id ASC
+    LIMIT $1;
+  `;
+
+  const [{ rows: summaryRows }, { rows: routeRows }, { rows: stopRows }] = await Promise.all([
+    pool.query(summaryQuery),
+    pool.query(routesQuery, [safeLimit]),
+    pool.query(stopsQuery, [safeLimit])
+  ]);
+
+  const summary = summaryRows[0] || { total_stops: 0, total_routes: 0 };
+
+  return {
+    summary: {
+      totalStops: Number(summary.total_stops || 0),
+      totalRoutes: Number(summary.total_routes || 0),
+      returnedStops: stopRows.length,
+      returnedRoutes: routeRows.length,
+      cappedByLimit: stopRows.length === safeLimit || routeRows.length === safeLimit,
+      limit: safeLimit
+    },
+    routes: routeRows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      stop_count: Number(row.stop_count)
+    })),
+    stops: stopRows.map((row) => ({
+      ...row,
+      id: Number(row.id),
+      latitude: Number(row.latitude),
+      longitude: Number(row.longitude),
+      route_count: Number(row.route_count)
+    }))
+  };
+}

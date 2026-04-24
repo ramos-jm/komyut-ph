@@ -14,6 +14,8 @@ const OVERPASS_URLS = (
       ]
 );
 
+const IMPORT_LOCK_KEY = 7312026;
+
 // ─── CLI args ──────────────────────────────────────────────────────────────
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -169,9 +171,68 @@ function normalizeSignboard(tags = {}) {
   return tags.name || "No signboard";
 }
 
+function normalizeStopName(rawName = "") {
+  const input = String(rawName || "").trim();
+  if (!input) return input;
+
+  // Collapse directional PITX variants into one canonical stop label.
+  if (/\bpitx\b/i.test(input)) {
+    return "PITX";
+  }
+
+  return input.replace(/\s+/g, " ").trim();
+}
+
+async function ensureImporterSchema(client) {
+  await client.query("ALTER TABLE routes ADD COLUMN IF NOT EXISTS source_relation_id BIGINT;");
+  await client.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_routes_source_relation_id_unique
+     ON routes (source_relation_id)
+     WHERE source_relation_id IS NOT NULL;`
+  );
+}
+
 // ─── Shape extraction (uses embedded geom from `out geom;`) ────────────────
 function coordDistSq(a, b) {
   return (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
+}
+
+function nearestShapeIndex(shapeCoords, targetCoord) {
+  let minIndex = 0;
+  let minDistance = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < shapeCoords.length; i += 1) {
+    const distance = coordDistSq(shapeCoords[i], targetCoord);
+    if (distance < minDistance) {
+      minDistance = distance;
+      minIndex = i;
+    }
+  }
+
+  return minIndex;
+}
+
+function relationStopMembers(relation) {
+  return (relation.members || []).filter((member) => {
+    if (member.type !== "node") return false;
+    const role = (member.role || "").toLowerCase();
+    return role === "" || role.includes("stop") || role.includes("platform");
+  });
+}
+
+function orderStopMembersByShape(stopMembers, shapeCoords) {
+  if (!Array.isArray(shapeCoords) || shapeCoords.length < 2 || stopMembers.length <= 1) {
+    return stopMembers;
+  }
+
+  return [...stopMembers].sort((a, b) => {
+    const idxA = nearestShapeIndex(shapeCoords, [a.lon, a.lat]);
+    const idxB = nearestShapeIndex(shapeCoords, [b.lon, b.lat]);
+    if (idxA !== idxB) {
+      return idxA - idxB;
+    }
+    return a.ref - b.ref;
+  });
 }
 
 /**
@@ -227,6 +288,37 @@ async function finalizeIngestRun(client, id, status, metrics, errorText = null) 
   );
 }
 
+async function getGraphStats(client) {
+  const result = await client.query(`
+    SELECT
+      (SELECT COUNT(*)::INT FROM stops) AS stops_count,
+      (SELECT COUNT(*)::INT FROM routes) AS routes_count,
+      (SELECT COUNT(*)::INT FROM route_stops) AS route_stops_count,
+      (SELECT COUNT(*)::INT FROM route_graph_edges) AS route_graph_edges_count;
+  `);
+
+  const row = result.rows[0] || {};
+  return {
+    stops: Number(row.stops_count || 0),
+    routes: Number(row.routes_count || 0),
+    routeStops: Number(row.route_stops_count || 0),
+    routeGraphEdges: Number(row.route_graph_edges_count || 0)
+  };
+}
+
+async function refreshRouteGraphEdges() {
+  try {
+    await pool.query("REFRESH MATERIALIZED VIEW CONCURRENTLY route_graph_edges;");
+  } catch (error) {
+    // Fallback when concurrent refresh is not possible.
+    if (error?.code === "55000") {
+      await pool.query("REFRESH MATERIALIZED VIEW route_graph_edges;");
+      return;
+    }
+    throw error;
+  }
+}
+
 async function recordChange(client, ingestRunId, tableName, operation, recordKey, before, after) {
   await client.query(
     `INSERT INTO ingest_run_changes
@@ -244,15 +336,28 @@ async function recordChange(client, ingestRunId, tableName, operation, recordKey
 // ─── Upsert helpers ────────────────────────────────────────────────────────
 async function upsertStop(client, node, ingestRunId, metrics) {
   const tags = node.tags || {};
-  const name = tags.name || tags.ref || `Stop ${node.id}`;
+  const rawName = tags.name || tags.ref || `Stop ${node.id}`;
+  const name = normalizeStopName(rawName);
   const type = stopTypeFromTags(tags);
 
-  const existing = await client.query(
+  let existing = await client.query(
     `SELECT id FROM stops
      WHERE name=$1 AND ABS(latitude-$2)<0.00005 AND ABS(longitude-$3)<0.00005
      ORDER BY id DESC LIMIT 1;`,
     [name, node.lat, node.lon]
   );
+
+  if (!existing.rows[0]?.id && name === "PITX") {
+    existing = await client.query(
+      `SELECT id FROM stops
+       WHERE name ILIKE '%pitx%'
+         AND ABS(latitude-$1)<0.001
+         AND ABS(longitude-$2)<0.001
+       ORDER BY id ASC
+       LIMIT 1;`,
+      [node.lat, node.lon]
+    );
+  }
 
   if (existing.rows[0]?.id) {
     const stopId = Number(existing.rows[0].id);
@@ -292,19 +397,34 @@ async function upsertRoute(client, relation, ingestRunId, metrics) {
   const name = tags.name || tags.ref || `Route ${relation.id}`;
   const type = routeTypeFromTags(tags);
   const signboard = normalizeSignboard(tags);
+  const sourceRelationId = Number(relation.id);
 
   const existing = await client.query(
-    "SELECT id FROM routes WHERE name=$1 AND signboard=$2 ORDER BY id DESC LIMIT 1;",
-    [name, signboard]
+    "SELECT id FROM routes WHERE source_relation_id=$1 ORDER BY id DESC LIMIT 1;",
+    [sourceRelationId]
   );
 
   if (existing.rows[0]?.id) {
     const routeId = Number(existing.rows[0].id);
-    const cur = await client.query("SELECT id,name,type,signboard FROM routes WHERE id=$1 LIMIT 1;", [routeId]);
+    const cur = await client.query(
+      "SELECT id,name,type,signboard,source_relation_id FROM routes WHERE id=$1 LIMIT 1;",
+      [routeId]
+    );
     const prev = cur.rows[0];
-    if (!prev || prev.name !== name || prev.type !== type || prev.signboard !== signboard) {
-      await client.query("UPDATE routes SET name=$2,type=$3,signboard=$4 WHERE id=$1;", [routeId, name, type, signboard]);
-      await recordChange(client, ingestRunId, "routes", "update", { id: routeId }, prev, { id: routeId, name, type, signboard });
+    if (!prev || prev.name !== name || prev.type !== type || prev.signboard !== signboard || Number(prev.source_relation_id) !== sourceRelationId) {
+      await client.query(
+        "UPDATE routes SET name=$2,type=$3,signboard=$4,source_relation_id=$5 WHERE id=$1;",
+        [routeId, name, type, signboard, sourceRelationId]
+      );
+      await recordChange(
+        client,
+        ingestRunId,
+        "routes",
+        "update",
+        { id: routeId },
+        prev,
+        { id: routeId, name, type, signboard, source_relation_id: sourceRelationId }
+      );
       metrics.routesUpdated += 1;
     } else {
       metrics.routesUnchanged += 1;
@@ -313,12 +433,20 @@ async function upsertRoute(client, relation, ingestRunId, metrics) {
   }
 
   const ins = await client.query(
-    "INSERT INTO routes (name,type,signboard) VALUES ($1,$2,$3) RETURNING id;",
-    [name, type, signboard]
+    "INSERT INTO routes (name,type,signboard,source_relation_id) VALUES ($1,$2,$3,$4) RETURNING id;",
+    [name, type, signboard, sourceRelationId]
   );
   const routeId = ins.rows[0]?.id ? Number(ins.rows[0].id) : null;
   if (routeId) {
-    await recordChange(client, ingestRunId, "routes", "insert", { id: routeId }, null, { id: routeId, name, type, signboard });
+    await recordChange(
+      client,
+      ingestRunId,
+      "routes",
+      "insert",
+      { id: routeId },
+      null,
+      { id: routeId, name, type, signboard, source_relation_id: sourceRelationId }
+    );
     metrics.routesInserted += 1;
   }
   return routeId;
@@ -350,6 +478,146 @@ async function upsertRouteShape(client, routeId, shapeCoords, ingestRunId, metri
   metrics.shapePointsUpserted += shapeCoords.length;
 }
 
+function isTransientDbError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toUpperCase();
+  return message.includes("connection terminated") ||
+    message.includes("terminating connection due to administrator command") ||
+    message.includes("server conn crashed") ||
+    message.includes("not queryable") ||
+    message.includes("client has encountered a connection error") ||
+    message.includes("timeout") ||
+    message.includes("deadlock detected") ||
+    code === "40P01" ||
+    code === "57P01" ||
+    code === "57P02" ||
+    code === "57P03";
+}
+
+function chunkArray(items, chunkSize) {
+  const chunks = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
+async function ingestStopBatchWithRetry(batch, ingestRunId, nodeIdToStopId, metrics) {
+  const maxAttempts = 4;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await withTransaction(async (client) => {
+        for (const node of batch) {
+          const stopId = await upsertStop(client, node, ingestRunId, metrics);
+          if (stopId) nodeIdToStopId.set(node.id, stopId);
+        }
+      });
+
+      return;
+    } catch (error) {
+      if (attempt < maxAttempts && isTransientDbError(error)) {
+        metrics.stopBatchRetries = (metrics.stopBatchRetries || 0) + 1;
+        console.warn(`       ↺ Stop batch retry (${attempt}/${maxAttempts}) due to transient DB issue: ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+async function ingestRelationWithRetry(relation, ingestRunId, nodeIdToStopId, metrics) {
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await withTransaction(async (client) => {
+        const routeId = await upsertRoute(client, relation, ingestRunId, metrics);
+        if (!routeId) return;
+
+        // Extract route shape first so stop members can be ordered along geometry.
+        const shape = extractShapeFromGeom(relation);
+        if (shape.length >= 2) {
+          await upsertRouteShape(client, routeId, shape, ingestRunId, metrics);
+        }
+
+        const rawStopMembers = relationStopMembers(relation);
+        const dedupedStopMembers = [];
+        const seenRefs = new Set();
+        for (const member of rawStopMembers) {
+          if (seenRefs.has(member.ref)) continue;
+          seenRefs.add(member.ref);
+          dedupedStopMembers.push(member);
+        }
+
+        const orderedStopMembers = orderStopMembersByShape(dedupedStopMembers, shape);
+
+        // Rebuild route->stop links to keep stop_order coherent across re-imports.
+        await client.query("DELETE FROM route_stops WHERE route_id=$1;", [routeId]);
+
+        let order = 1;
+        for (const member of orderedStopMembers) {
+          if (!nodeIdToStopId.has(member.ref) && member.lat != null) {
+            const tags = member.tags || {};
+            const rawName = tags.name || tags.ref || `Stop ${member.ref}`;
+            const name = normalizeStopName(rawName);
+            const type = stopTypeFromTags(tags);
+            const ins = await client.query(
+              "INSERT INTO stops (name,latitude,longitude,type) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id;",
+              [name, member.lat, member.lon, type]
+            );
+            if (ins.rows[0]?.id) {
+              nodeIdToStopId.set(member.ref, Number(ins.rows[0].id));
+              metrics.stopsInserted += 1;
+            }
+          }
+          const stopId = nodeIdToStopId.get(member.ref);
+          if (!stopId) continue;
+
+          const ins = await client.query(
+            `INSERT INTO route_stops (route_id,stop_id,stop_order)
+             VALUES ($1,$2,$3) ON CONFLICT (route_id,stop_id) DO NOTHING;`,
+            [routeId, stopId, order]
+          );
+          if (ins.rowCount > 0) {
+            await recordChange(client, ingestRunId, "route_stops", "insert",
+              { route_id: routeId, stop_id: stopId }, null,
+              { route_id: routeId, stop_id: stopId, stop_order: order });
+            metrics.routeStopsInserted += 1;
+          }
+          order += 1;
+        }
+      });
+
+      return;
+    } catch (error) {
+      if (attempt < maxAttempts && isTransientDbError(error)) {
+        metrics.relationRetries = (metrics.relationRetries || 0) + 1;
+        console.warn(`       ↺ Route relation retry (${attempt}/${maxAttempts}) due to transient DB issue: ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+
+async function acquireImportLock() {
+  const result = await pool.query("SELECT pg_try_advisory_lock($1) AS locked;", [IMPORT_LOCK_KEY]);
+  const locked = Boolean(result.rows[0]?.locked);
+  if (!locked) {
+    throw new Error("Another import is already running. Please wait for it to finish.");
+  }
+}
+
+async function releaseImportLock() {
+  try {
+    await pool.query("SELECT pg_advisory_unlock($1);", [IMPORT_LOCK_KEY]);
+  } catch {
+    // Ignore unlock failures on shutdown.
+  }
+}
+
 // ─── Per-cell import ────────────────────────────────────────────────────────
 async function importCell(cellBbox, limitPerCell, ingestRunId, nodeIdToStopId, metrics) {
   console.log(`  📦  Cell ${cellBbox} — fetching stops…`);
@@ -369,12 +637,10 @@ async function importCell(cellBbox, limitPerCell, ingestRunId, nodeIdToStopId, m
   );
   console.log(`       Found ${stopNodes.length} stop nodes.`);
 
-  await withTransaction(async (client) => {
-    for (const node of stopNodes) {
-      const stopId = await upsertStop(client, node, ingestRunId, metrics);
-      if (stopId) nodeIdToStopId.set(node.id, stopId);
-    }
-  });
+  const stopBatches = chunkArray(stopNodes, 20);
+  for (const batch of stopBatches) {
+    await ingestStopBatchWithRetry(batch, ingestRunId, nodeIdToStopId, metrics);
+  }
   metrics.nodesReceived += stopNodes.length;
 
   // Small pause to be polite to the Overpass server
@@ -397,54 +663,14 @@ async function importCell(cellBbox, limitPerCell, ingestRunId, nodeIdToStopId, m
   console.log(`       Found ${relations.length} route relations.`);
   metrics.relationsReceived += relations.length;
 
-  await withTransaction(async (client) => {
-    for (const relation of relations) {
-      const routeId = await upsertRoute(client, relation, ingestRunId, metrics);
-      if (!routeId) continue;
-
-      // Link stop members to the route
-      let order = 1;
-      for (const member of relation.members || []) {
-        if (member.type !== "node") continue;
-        // With `out geom;`, node members have lat/lon directly
-        if (!nodeIdToStopId.has(member.ref) && member.lat != null) {
-          // Stop referenced in route but not fetched in stop query — create it
-          const tags = member.tags || {};
-          const name = tags.name || tags.ref || `Stop ${member.ref}`;
-          const type = stopTypeFromTags(tags);
-          const ins = await client.query(
-            "INSERT INTO stops (name,latitude,longitude,type) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING id;",
-            [name, member.lat, member.lon, type]
-          );
-          if (ins.rows[0]?.id) {
-            nodeIdToStopId.set(member.ref, Number(ins.rows[0].id));
-            metrics.stopsInserted += 1;
-          }
-        }
-        const stopId = nodeIdToStopId.get(member.ref);
-        if (!stopId) continue;
-
-        const ins = await client.query(
-          `INSERT INTO route_stops (route_id,stop_id,stop_order)
-           VALUES ($1,$2,$3) ON CONFLICT (route_id,stop_id) DO NOTHING;`,
-          [routeId, stopId, order]
-        );
-        if (ins.rowCount > 0) {
-          await recordChange(client, ingestRunId, "route_stops", "insert",
-            { route_id: routeId, stop_id: stopId }, null,
-            { route_id: routeId, stop_id: stopId, stop_order: order });
-          metrics.routeStopsInserted += 1;
-        }
-        order += 1;
-      }
-
-      // Extract shape from embedded geometry
-      const shape = extractShapeFromGeom(relation);
-      if (shape.length >= 2) {
-        await upsertRouteShape(client, routeId, shape, ingestRunId, metrics);
-      }
+  for (const relation of relations) {
+    try {
+      await ingestRelationWithRetry(relation, ingestRunId, nodeIdToStopId, metrics);
+    } catch (error) {
+      console.warn(`       ⚠️  Skipping relation ${relation.id} after retries: ${error.message}`);
+      metrics.relationFailures = (metrics.relationFailures || 0) + 1;
     }
-  });
+  }
 
   // Pause between cells
   await new Promise((r) => setTimeout(r, 3000));
@@ -455,7 +681,7 @@ async function run() {
   const args = parseArgs();
   const region = resolveRegionConfig(args.region, args.bbox);
   const gridCells = buildGrid(region.bbox, args.gridLat, args.gridLng);
-  const limitPerCell = Math.max(200, Math.floor(args.limit / gridCells.length));
+  const limitPerCell = Math.max(50, Math.floor(args.limit / gridCells.length));
 
   console.log(`\n🗺️  PH Commute Guide — Overpass Grid Importer`);
   console.log(`   Region : ${region.regionKey}  (${region.bbox})`);
@@ -467,15 +693,22 @@ async function run() {
     stopsInserted: 0, stopsUpdated: 0, stopsUnchanged: 0,
     routesInserted: 0, routesUpdated: 0, routesUnchanged: 0,
     routeStopsInserted: 0,
-    shapePointsUpserted: 0, shapeRoutesReplaced: 0
+    shapePointsUpserted: 0, shapeRoutesReplaced: 0,
+    relationFailures: 0,
+    relationRetries: 0,
+    stopBatchRetries: 0
   };
 
   // nodeIdToStopId is shared across cells so cross-cell routes link correctly
   const nodeIdToStopId = new Map();
   let ingestRunId = null;
+  let beforeStats = null;
+  await acquireImportLock();
 
   // Start the audit run
   await withTransaction(async (client) => {
+    await ensureImporterSchema(client);
+    beforeStats = await getGraphStats(client);
     ingestRunId = await startIngestRun(client, {
       regionKey: region.regionKey,
       bbox: region.bbox,
@@ -490,6 +723,27 @@ async function run() {
       await importCell(cell, limitPerCell, ingestRunId, nodeIdToStopId, metrics);
     }
 
+    await refreshRouteGraphEdges();
+
+    const afterStatsResult = await pool.query(`
+      SELECT
+        (SELECT COUNT(*)::INT FROM stops) AS stops_count,
+        (SELECT COUNT(*)::INT FROM routes) AS routes_count,
+        (SELECT COUNT(*)::INT FROM route_stops) AS route_stops_count,
+        (SELECT COUNT(*)::INT FROM route_graph_edges) AS route_graph_edges_count;
+    `);
+    const afterRow = afterStatsResult.rows[0] || {};
+    const afterStats = {
+      stops: Number(afterRow.stops_count || 0),
+      routes: Number(afterRow.routes_count || 0),
+      routeStops: Number(afterRow.route_stops_count || 0),
+      routeGraphEdges: Number(afterRow.route_graph_edges_count || 0)
+    };
+
+    metrics.graphStatsBefore = beforeStats;
+    metrics.graphStatsAfter = afterStats;
+    metrics.graphEdgeGrowth = afterStats.routeGraphEdges - (beforeStats?.routeGraphEdges || 0);
+
     await withTransaction(async (client) => {
       await finalizeIngestRun(client, ingestRunId, "success", metrics);
     });
@@ -500,6 +754,11 @@ async function run() {
     console.log(`   Routes        : +${metrics.routesInserted} new, ~${metrics.routesUpdated} updated`);
     console.log(`   Route-stops   : +${metrics.routeStopsInserted} links`);
     console.log(`   Shape points  : ${metrics.shapePointsUpserted} pts across ${metrics.shapeRoutesReplaced} routes`);
+    console.log(`   Failed relations : ${metrics.relationFailures}`);
+    console.log(`   Relation retries : ${metrics.relationRetries}`);
+    console.log(`   Stop batch retries : ${metrics.stopBatchRetries}`);
+    console.log(`   Graph edges before/after : ${metrics.graphStatsBefore?.routeGraphEdges || 0} -> ${metrics.graphStatsAfter?.routeGraphEdges || 0}`);
+    console.log(`   Graph edge growth : ${metrics.graphEdgeGrowth}`);
   } catch (err) {
     console.error("\n❌  Import failed:", err.message);
     if (ingestRunId) {
@@ -511,4 +770,10 @@ async function run() {
   }
 }
 
-run().finally(async () => { await pool.end(); });
+run().finally(async () => {
+  try {
+    await releaseImportLock();
+  } finally {
+    await pool.end();
+  }
+});

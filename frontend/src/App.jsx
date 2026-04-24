@@ -1,7 +1,8 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import AvailableCatalogSection from "./components/AvailableCatalogSection.jsx";
 import RouteCards from "./components/RouteCards.jsx";
 import StopAutocomplete from "./components/StopAutocomplete.jsx";
-import { fetchTrainInfo, getNearbyStops, getSavedRoutes, saveRoute, searchRoute } from "./lib/api.js";
+import { fetchAvailableCatalog, fetchTrainInfo, getNearbyStops, getSavedRoutes, saveRoute, searchRoute } from "./lib/api.js";
 
 const MapView = lazy(() => import("./components/MapView.jsx"));
 
@@ -48,6 +49,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(false);
   const [error, setError] = useState("");
+  const [catalog, setCatalog] = useState(null);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState("");
   const [locationHint, setLocationHint] = useState("");
   const [selectedRouteType, setSelectedRouteType] = useState("fastest");
 
@@ -64,6 +68,16 @@ export default function App() {
           setSaved(JSON.parse(local));
         }
       });
+
+    fetchAvailableCatalog(1000)
+      .then((data) => {
+        setCatalog(data);
+        setCatalogError("");
+      })
+      .catch((err) => {
+        setCatalogError(err?.message || "Hindi ma-load ang available catalog.");
+      })
+      .finally(() => setCatalogLoading(false));
   }, []);
 
   useEffect(() => {
@@ -371,6 +385,14 @@ export default function App() {
             </ul>
           </div>
         </aside>
+      </section>
+
+      <section className="mx-auto w-full max-w-7xl">
+        <AvailableCatalogSection
+          catalog={catalog}
+          loading={catalogLoading}
+          error={catalogError}
+        />
       </section>
     </main>
   );

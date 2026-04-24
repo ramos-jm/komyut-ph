@@ -5,17 +5,27 @@ import {
   getTransitGraph,
   getTransitGraphWithinBounds
 } from "../repositories/transitRepository.js";
-import { estimateWalkMinutes } from "../utils/geo.js";
+import { estimateWalkMinutes, haversineMeters } from "../utils/geo.js";
 
-const MAX_TRANSFERS = 2;
-const MAX_NODE_VISITS = 15000;
+const MAX_TRANSFERS = env.routeMaxTransfers;
+const MAX_NODE_VISITS = env.routeMaxNodeVisits;
+const MIN_NEARBY_STOPS = env.routeSearchMinStops;
+const NEARBY_STOP_LIMIT = env.routeSearchStopLimit;
+const SEARCH_RADII_METERS = env.routeSearchRadiiMeters;
+const MAX_FALLBACK_HOP_METERS = 9000;
+const MAX_FALLBACK_TOTAL_METERS = 12000;
 
-const MODE_BASE_FARE = {
-  jeep: 13,
-  bus: 15,
-  uv: 25,
-  train: 20
+const MODE_FARE_CONFIG = {
+  jeep: { base: 14, perKm: 2.2 },
+  bus: { base: 15, perKm: 2.25 },
+  uv: { base: 25, perKm: 6 },
+  train: { base: 20, perKm: 0 }
 };
+
+function estimateLegFare(mode, distanceKm) {
+  const cfg = MODE_FARE_CONFIG[mode] || MODE_FARE_CONFIG.bus;
+  return Math.max(cfg.base, Math.round((cfg.base + (cfg.perKm * distanceKm)) * 100) / 100);
+}
 
 function kmToDegreeDelta(km) {
   return km / 111;
@@ -68,9 +78,27 @@ function buildFallbackSegmentCoordinates(rideStep, candidate, stopsById) {
   }
 
   const coordinates = [[Number(firstStop.longitude), Number(firstStop.latitude)]];
+  let totalFallbackMeters = 0;
+
   for (const edge of slice) {
+    const fromStop = stopsById.get(edge.fromStopId);
     const stop = stopsById.get(edge.toStopId);
-    if (stop) {
+    if (fromStop && stop) {
+      const hopDistanceMeters = haversineMeters(
+        Number(fromStop.latitude),
+        Number(fromStop.longitude),
+        Number(stop.latitude),
+        Number(stop.longitude)
+      );
+
+      totalFallbackMeters += hopDistanceMeters;
+
+      // Block clearly unrealistic straight-line rendering when shape data is missing,
+      // while still allowing moderate inter-stop fallback so the map is not empty.
+      if (hopDistanceMeters > MAX_FALLBACK_HOP_METERS || totalFallbackMeters > MAX_FALLBACK_TOTAL_METERS) {
+        return [];
+      }
+
       coordinates.push([Number(stop.longitude), Number(stop.latitude)]);
     }
   }
@@ -103,6 +131,34 @@ function buildSegmentCoordinates(rideStep, candidate, stopsById, routeShapePoint
   return sliced.length >= 2
     ? sliced
     : buildFallbackSegmentCoordinates(rideStep, candidate, stopsById);
+}
+
+function buildRawPathCoordinatesFromEdges(pathEdges, stopsById) {
+  if (!Array.isArray(pathEdges) || pathEdges.length === 0) {
+    return [];
+  }
+
+  const firstFrom = stopsById.get(pathEdges[0].fromStopId);
+  if (!firstFrom) {
+    return [];
+  }
+
+  const coordinates = [[Number(firstFrom.longitude), Number(firstFrom.latitude)]];
+
+  for (const edge of pathEdges) {
+    const stop = stopsById.get(edge.toStopId);
+    if (!stop) {
+      continue;
+    }
+
+    const nextCoord = [Number(stop.longitude), Number(stop.latitude)];
+    const prev = coordinates[coordinates.length - 1];
+    if (!prev || prev[0] !== nextCoord[0] || prev[1] !== nextCoord[1]) {
+      coordinates.push(nextCoord);
+    }
+  }
+
+  return coordinates;
 }
 
 function buildRideSteps(pathEdges, stopsById) {
@@ -169,6 +225,57 @@ function buildRideSteps(pathEdges, stopsById) {
   });
 }
 
+function estimateRideStepDistanceKm(rideStep, candidate, stopsById) {
+  const edges = candidate.pathEdges.slice(rideStep.edgeStartIndex, rideStep.edgeEndIndex + 1);
+  if (edges.length === 0) {
+    return 0;
+  }
+
+  let meters = 0;
+  for (const edge of edges) {
+    const from = stopsById.get(edge.fromStopId);
+    const to = stopsById.get(edge.toStopId);
+    if (!from || !to) {
+      continue;
+    }
+    meters += haversineMeters(
+      Number(from.latitude),
+      Number(from.longitude),
+      Number(to.latitude),
+      Number(to.longitude)
+    );
+  }
+
+  return meters / 1000;
+}
+
+async function findNearbyStopsAdaptive({ lat, lng }) {
+  let fallback = [];
+
+  for (const radiusMeters of SEARCH_RADII_METERS) {
+    const result = await findNearbyStops({
+      lat,
+      lng,
+      radiusMeters,
+      limit: NEARBY_STOP_LIMIT
+    });
+    const stops = Array.isArray(result) ? result : [];
+
+    if (stops.length > fallback.length) {
+      fallback = stops;
+    }
+
+    if (stops.length >= MIN_NEARBY_STOPS) {
+      return { stops, radiusMeters };
+    }
+  }
+
+  return {
+    stops: fallback,
+    radiusMeters: SEARCH_RADII_METERS[SEARCH_RADII_METERS.length - 1]
+  };
+}
+
 function summarizeCandidate(candidate, context) {
   const {
     originText,
@@ -191,7 +298,19 @@ function summarizeCandidate(candidate, context) {
   const transferPenalty = candidate.transfers * 5;
   const estimatedMinutes = walkStartMinutes + transitMinutes + transferPenalty + walkEndMinutes;
 
-  const estimatedFare = rideSteps.reduce((total, step) => total + (MODE_BASE_FARE[step.mode] || 15), 0);
+  const fareBreakdown = rideSteps.map((step) => {
+    const distanceKm = estimateRideStepDistanceKm(step, candidate, stopsById);
+    return {
+      mode: step.mode,
+      routeId: step.routeId,
+      signboard: step.signboard,
+      distanceKm: Math.round(distanceKm * 100) / 100,
+      estimatedFare: estimateLegFare(step.mode, distanceKm)
+    };
+  });
+  const estimatedFare = Math.round(
+    fareBreakdown.reduce((total, leg) => total + leg.estimatedFare, 0) * 100
+  ) / 100;
 
   const steps = [
     {
@@ -209,7 +328,7 @@ function summarizeCandidate(candidate, context) {
     }
   ];
 
-  const mapSegments = rideSteps
+  let mapSegments = rideSteps
     .map((rideStep, index) => {
       const coordinates = buildSegmentCoordinates(rideStep, candidate, stopsById, routeShapePointsMap);
 
@@ -229,10 +348,12 @@ function summarizeCandidate(candidate, context) {
     })
     .filter(Boolean);
 
-  const pathCoordinates = [];
+  let pathCoordinates = [];
   for (const segment of mapSegments) {
     if (pathCoordinates.length === 0) {
-      pathCoordinates.push(segment.coordinates[0]);
+      for (const coord of segment.coordinates) {
+        pathCoordinates.push(coord);
+      }
       continue;
     }
 
@@ -240,6 +361,27 @@ function summarizeCandidate(candidate, context) {
       const prev = pathCoordinates[pathCoordinates.length - 1];
       if (!prev || prev[0] !== coord[0] || prev[1] !== coord[1]) {
         pathCoordinates.push(coord);
+      }
+    }
+  }
+
+  if (pathCoordinates.length < 2) {
+    const rawPathCoordinates = buildRawPathCoordinatesFromEdges(candidate.pathEdges, stopsById);
+    if (rawPathCoordinates.length >= 2) {
+      pathCoordinates = rawPathCoordinates;
+
+      if (mapSegments.length === 0 && rideSteps.length > 0) {
+        mapSegments = [
+          {
+            mode: rideSteps[0].mode,
+            signboard: rideSteps[0].signboard,
+            from: rideSteps[0].from,
+            to: rideSteps[rideSteps.length - 1].to,
+            instruction: rideSteps[0].instruction,
+            segmentIndex: 1,
+            coordinates: rawPathCoordinates
+          }
+        ];
       }
     }
   }
@@ -302,6 +444,7 @@ function summarizeCandidate(candidate, context) {
     steps,
     estimatedMinutes,
     estimatedFare,
+    fareBreakdown,
     transfers: candidate.transfers,
     pathCoordinates,
     mapSegments,
@@ -348,17 +491,21 @@ function pickRouteOptions(candidates) {
 export async function searchCommuteRoutes({ originText, destinationText, originCoords, destinationCoords }) {
   const bounds = buildSearchBounds(originCoords, destinationCoords, env.routeSearchGraphBufferKm);
 
-  const [originStops, destinationStops, boundedGraph, routeShapePointsMap] = await Promise.all([
-    findNearbyStops({
+  const [originNearby, destinationNearby] = await Promise.all([
+    findNearbyStopsAdaptive({
       lat: originCoords.latitude,
-      lng: originCoords.longitude,
-      radiusMeters: env.routeSearchRadiusMeters
+      lng: originCoords.longitude
     }),
-    findNearbyStops({
+    findNearbyStopsAdaptive({
       lat: destinationCoords.latitude,
-      lng: destinationCoords.longitude,
-      radiusMeters: env.routeSearchRadiusMeters
-    }),
+      lng: destinationCoords.longitude
+    })
+  ]);
+
+  const originStops = originNearby.stops;
+  const destinationStops = destinationNearby.stops;
+
+  const [boundedGraph, routeShapePointsMap] = await Promise.all([
     getTransitGraphWithinBounds(bounds),
     getRouteShapePointsMap()
   ]);
@@ -451,6 +598,10 @@ export async function searchCommuteRoutes({ originText, destinationText, originC
     meta: {
       candidateCount: candidates.length,
       graphScope: graphNeedsFallback ? "full_fallback" : "bounded",
+      searchRadiiMeters: {
+        origin: originNearby.radiusMeters,
+        destination: destinationNearby.radiusMeters
+      },
       searchedStops: {
         origin: originStops.length,
         destination: destinationStops.length

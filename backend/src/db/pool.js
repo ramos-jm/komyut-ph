@@ -34,7 +34,9 @@ function resolveSslConfig(databaseUrl, nodeEnv) {
 
 export const pool = new Pool({
   connectionString: env.databaseUrl,
-  ssl: resolveSslConfig(env.databaseUrl, env.nodeEnv)
+  ssl: resolveSslConfig(env.databaseUrl, env.nodeEnv),
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000
 });
 
 pool.on("error", (error) => {
@@ -54,7 +56,13 @@ export async function withTransaction(callback) {
     await client.query("COMMIT");
     return result;
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (!client.released) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Connection can be terminated by server/proxy; ignore rollback failure.
+      }
+    }
     throw error;
   } finally {
     client.off("error", onClientError);

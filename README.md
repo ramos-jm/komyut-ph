@@ -57,6 +57,11 @@ Base URL: `http://localhost:4000/api`
 
 - `GET /search-route?origin=...&destination=...`
 - `GET /stops/nearby?lat=...&lng=...&radius=1000`
+- `GET /catalog/available?limit=1000`
+- `GET /source-truth/summary`
+- `POST /corrections`
+- `GET /corrections/pending` (requires `x-moderation-token`)
+- `PATCH /corrections/:id/review` (requires `x-moderation-token`)
 - `GET /routes/:id`
 - `POST /save-route`
 - `GET /saved-routes`
@@ -230,3 +235,20 @@ Included tests:
 - Add background job to refresh geocode cache health
 - Add richer stop/route dataset (GTFS-like import pipeline from OSM/Overpass)
 - Add tests for BFS route ranking and API contracts
+
+## Source-of-truth pipeline
+
+Use this workflow to improve data quality without scraping proprietary apps:
+
+1. Import LTFRB/advisories/aliases via curated files.
+2. Accept user corrections and moderate them.
+3. Benchmark your outputs against public-visible reference snapshots.
+
+Commands from `backend/`:
+
+```bash
+npm run source-truth:import
+npm run benchmark:run
+```
+
+Detailed runbook: `SOURCE_OF_TRUTH_PIPELINE.md`
